@@ -1,0 +1,148 @@
+package common.management.common.security;
+
+import common.management.administration.payload.response.RoleDto;
+import common.management.common.model.Privilege;
+import common.management.common.model.Role;
+import common.management.common.repository.RoleRepository;
+import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+//TODO: refactor to interface
+@Component
+@DependsOn({"SpringContext"})
+public class ConcurrentHashMapRoleCache implements RoleCache {
+    private final RoleRepository roleRepository;
+    private ConcurrentMap<String, Role> definedRoles;
+    private ConcurrentHashMap<String, List<RequestMatcher>> requestMatchers;
+
+    @Autowired
+    public ConcurrentHashMapRoleCache(RoleRepository roleRepository) {
+        this.roleRepository = roleRepository;
+    }
+
+    @PostConstruct
+    private void initRoleCache() {
+
+        setDefinedRoles(new ConcurrentHashMap<>());
+        setRequestMatchers(new ConcurrentHashMap<>());
+
+        List<Role> roles = roleRepository.findAll();
+        //INIT ROLES
+        setDefinedRoles(
+                roles.stream().collect(Collectors.toConcurrentMap(Role::getName, Function.identity())));
+
+        //INIT ANTMATCHERS
+        for (Role role : roles) {
+            for (Privilege privilege : role.getPrivileges()) {
+                if (privilege != null && privilege.getUri() != null && !privilege.getUri().equals("")) {
+                    RequestMatcher requestMatcher = new AntPathRequestMatcher(privilege.getUri(), privilege.getHttpMethod());
+                    if (!requestMatchers.containsKey(role.getName())) {
+                        List<RequestMatcher> rlist = new ArrayList<>();
+                        rlist.add(requestMatcher);
+                        requestMatchers.put(role.getName(), rlist);
+                    } else {
+                        requestMatchers.get(role.getName()).add(requestMatcher);
+                    }
+                }
+            }
+        }
+    }
+
+
+    @Override
+    public void refreshRoleRequestMatcher(Role role) {
+
+        requestMatchers.put(role.getName(), new ArrayList<>());
+
+        if (role.getPrivileges() == null) return;
+
+        for (Privilege privilege : role.getPrivileges()) {
+            if (privilege != null && privilege.getUri() != null && !privilege.getUri().equals("")) {
+                RequestMatcher requestMatcher = new AntPathRequestMatcher(privilege.getUri(), privilege.getHttpMethod());
+                if (!requestMatchers.containsKey(role.getName())) {
+                    List<RequestMatcher> rlist = new ArrayList<>();
+                    rlist.add(requestMatcher);
+                    requestMatchers.put(role.getName(), rlist);
+                } else {
+                    requestMatchers.get(role.getName()).add(requestMatcher);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void insertRole(Role role) {
+        definedRoles.put(role.getName(), role);
+        refreshRoleRequestMatcher(role);
+    }
+
+    @Override
+    public void refreshRolePrivileges(Role role, List<Privilege> privileges) {
+        definedRoles.get(role.getName()).setPrivileges(privileges);
+    }
+
+    @Override
+    public List<RoleDto> getDefinedRoles() {
+        return definedRoles.values().stream().map(r -> new RoleDto(r.getId(), r.getName())).toList();
+    }
+
+    @Override
+    public Optional<Long> getRoleId(String roleName) {
+        if (definedRoles.containsKey(roleName)) {
+            return Optional.of(definedRoles.get(roleName).getId());
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public List<Privilege> getRolePrivilege(String roleName) {
+        if (definedRoles.containsKey(roleName)) {
+            return Collections.unmodifiableList(definedRoles.get(roleName).getPrivileges().stream().toList());
+        }
+        return List.of();
+    }
+
+    private void setDefinedRoles(ConcurrentMap<String, Role> definedRoles) {
+        this.definedRoles = definedRoles;
+    }
+
+    @Override
+    public Map<String, List<RequestMatcher>> getRequestMatchers() {
+        return Collections.unmodifiableMap(requestMatchers);
+    }
+
+    @Override
+    public List<String> getRolePermissions(String roleName) {
+        if (definedRoles.containsKey(roleName) && definedRoles.get(roleName).getPermissions() != null) {
+            return Collections.unmodifiableList(definedRoles.get(roleName).getPermissions());
+        }
+        return new ArrayList<>();
+    }
+
+    @Override
+    public boolean containsRole(String roleName) {
+        return definedRoles.containsKey(roleName);
+    }
+
+    @Override
+    public void updateRolePermissions(String roleName, Set<PermissionsEnum> permissions) {
+        var role = definedRoles.get(roleName);
+        var permissionList = permissions.stream().map(Enum::name).toList();
+        role.setPermissions(new ArrayList<>(permissionList));
+
+    }
+
+    private void setRequestMatchers(ConcurrentHashMap<String, List<RequestMatcher>> requestMatchers) {
+        this.requestMatchers = requestMatchers;
+    }
+}
